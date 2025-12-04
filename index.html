@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StaplerTracker</title>
+<style>
+body {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background: linear-gradient(135deg, #f7a600 0%, #fcd9a7 40%, #ffffff 100%);
+    color: #333;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+h2 { color: #e4002b; text-align: center; }
+.card { 
+    background: #1b1b1b; 
+    padding: 20px; 
+    border-radius: 12px; 
+    max-width: 500px; 
+    width: 100%;
+    margin-bottom:20px;
+    color:#eee;
+}
+
+input, select, button {
+    width:100%;
+    padding:10px;
+    margin:6px 0;
+    border-radius:6px;
+    border:1px solid #333;
+    background:#0f0f0f;
+    color:#eee;
+    font-size:1em;
+}
+
+button { cursor:pointer; transition:0.2s; font-weight:600; }
+button:hover { opacity:0.9; transform:scale(1.02); }
+
+.button-group { display:flex; gap:10px; margin-top:10px; }
+.button-group button { flex:1; }
+
+.start { background:#e4002b; color:white; }
+.stop { background:#444; color:white; }
+.backup { background:#0077cc; color:white; }
+.yes { background:#0f7b0f; color:white; }
+.no { background:#b30000; color:white; }
+
+#cableDialog { display:none; padding:20px; background:#1b1b1b; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); border-radius:12px; border:1px solid #333; box-shadow:0 5px 20px rgba(0,0,0,0.7); z-index:10; }
+</style>
+</head>
+<body>
+
+<div id="namePrompt" class="card">
+    <h2>Willkommen beim StaplerTracker</h2>
+    <label>Bitte deinen Namen eingeben:</label>
+    <input id="usernameInput" placeholder="z.B. Ali">
+    <button onclick="saveName()">Bestätigen</button>
+</div>
+
+<div id="mainApp" style="display:none;">
+    <img src="logo.png" alt="Porsche Logo" style="max-width:180px; display:block; margin:0 auto 20px auto;" />
+    <h2>StaplerTracker – Offline Web App</h2>
+
+    <div class="card">
+        <label>Mitarbeiter: <span id="currentUser"></span></label>
+        <label>Stapler-Nummer</label>
+        <input id="stapler" placeholder="z.B. 102" />
+        <label>Abteilung</label>
+        <select id="department">
+            <option value="WE/WA">WE/WA</option>
+            <option value="Abstand">Abstand</option>
+        </select>
+        <div class="button-group">
+            <button class="start" onclick="startUsage()">START</button>
+            <button class="stop" onclick="askCable()">STOP</button>
+            <button class="backup" onclick="exportCSV()">Backup</button>
+        </div>
+        <p id="activeInfo" style="color:#ccc; margin-top:10px;"></p>
+    </div>
+
+    <div class="card">
+        <label>Nach Abteilung filtern:</label>
+        <select id="departmentFilter" onchange="renderTable()">
+            <option value="all">Alle</option>
+            <option value="WE/WA">WE/WA</option>
+            <option value="Abstand">Abstand</option>
+        </select>
+        <table id="usageTable"></table>
+    </div>
+</div>
+
+<div id="cableDialog">
+    <h3>Ladekabel eingesteckt?</h3>
+    <div class="button-group">
+        <button class="yes" onclick="stopUsage(true)">JA</button>
+        <button class="no" onclick="stopUsage(false)">NEIN</button>
+        <button onclick="closeDialog()" style="flex:1; background:#666;">Abbrechen</button>
+    </div>
+</div>
+
+<script>
+// --- Name speichern ---
+function saveName(){
+    const name = document.getElementById("usernameInput").value.trim();
+    if(!name) return alert("Bitte Name eingeben!");
+    localStorage.setItem("staplerUser", name);
+    document.getElementById("namePrompt").style.display="none";
+    document.getElementById("mainApp").style.display="block";
+    document.getElementById("currentUser").innerText = name;
+}
+
+// Prüfen, ob Name schon gespeichert
+window.onload = function(){
+    const saved = localStorage.getItem("staplerUser");
+    if(saved){
+        document.getElementById("namePrompt").style.display="none";
+        document.getElementById("mainApp").style.display="block";
+        document.getElementById("currentUser").innerText = saved;
+    }
+}
+
+// --- Rest der StaplerTracker-Logik ---
+let usages = JSON.parse(localStorage.getItem("stapler_usages") || "[]");
+let activeId = null;
+
+function cleanupOldUsages(){
+    const now = Date.now();
+    usages = usages.filter(u => now - u.id < 48*60*60*1000);
+    save();
+}
+cleanupOldUsages();
+
+function startUsage(){
+    const employee = localStorage.getItem("staplerUser");
+    const stapler = document.getElementById("stapler").value.trim();
+    const department = document.getElementById("department").value;
+    if(!stapler) return alert("Bitte Staplernummer eingeben!");
+    const active = usages.find(u=>u.employee===employee && !u.checkOut);
+    if(active){ activeId = active.id; updateActiveInfo(); return; }
+    const newUsage = {id:Date.now(), employee, stapler, department, checkIn:new Date().toLocaleString(), checkOut:null, cable:null};
+    usages.unshift(newUsage); activeId=newUsage.id; save(); renderTable(); updateActiveInfo();
+}
+
+function askCable(){
+    const employee = localStorage.getItem("staplerUser");
+    const active = usages.find(u=>u.employee===employee && !u.checkOut);
+    if(!active) return alert("Kein aktiver Vorgang!");
+    document.getElementById("cableDialog").style.display="block";
+}
+
+function closeDialog(){ document.getElementById("cableDialog").style.display="none"; }
+
+function stopUsage(cable){
+    const employee = localStorage.getItem("staplerUser");
+    const usage = usages.find(u=>u.employee===employee && !u.checkOut);
+    if(!usage) return;
+    usage.checkOut = new Date().toLocaleString();
+    usage.cable = cable;
+    save(); renderTable(); updateActiveInfo(); closeDialog();
+}
+
+function updateActiveInfo(){
+    const employee = localStorage.getItem("staplerUser");
+    const active = usages.find(u=>u.employee===employee && !u.checkOut);
+    document.getElementById("activeInfo").innerText = active ? `Aktiv: Stapler ${active.stapler} (Abteilung: ${active.department}) seit ${active.checkIn}` : "";
+}
+
+function save(){ localStorage.setItem("stapler_usages", JSON.stringify(usages)); }
+
+function renderTable(){
+    const table = document.getElementById("usageTable");
+    const filter = document.getElementById("departmentFilter").value;
+    table.innerHTML=`<tr><th>Mitarbeiter</th><th>Stapler</th><th>Abteilung</th><th>Start</th><th>Ende</th><th>Kabel</th></tr>`;
+    let filtered = usages; if(filter!=="all") filtered = usages.filter(u=>u.department===filter);
+    filtered.forEach(u=>{
+        table.innerHTML+=`<tr>
+            <td>${u.employee}</td>
+            <td>${u.stapler}</td>
+            <td>${u.department}</td>
+            <td>${u.checkIn}</td>
+            <td>${u.checkOut ? u.checkOut : '<span style="color:#e4002b;font-weight:bold;">aktiv</span>'}</td>
+            <td>${u.cable===null?'-':u.cable?'<span style="color:#0f7b0f;font-weight:bold;">Ja</span>':'<span style="color:#e4002b;font-weight:bold;">Nein</span>'}</td>
+        </tr>`;
+    });
+}
+
+// CSV Export
+function exportCSV(){
+    if(!usages.length) return alert("Keine Daten!");
+    let csv = "Mitarbeiter,Stapler,Abteilung,Start,Ende,Kabel\n";
+    usages.forEach(u=>{csv+=`"${u.employee}","${u.stapler}","${u.department}","${u.checkIn}","${u.checkOut?u.checkOut:""}","${u.cable===null?"":u.cable?"Ja":"Nein"}"\n`;});
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"}); const link=document.createElement("a");
+    link.href = URL.createObjectURL(blob); link.download=`StaplerBackup_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+}
+
+// Tabelle sofort rendern
+renderTable(); updateActiveInfo();
+</script>
+</body>
+</html>
